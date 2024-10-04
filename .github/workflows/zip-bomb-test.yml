@@ -31,71 +31,76 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Unzip and commit files one at a time
-      - name: Unzip and commit files
+      # Step 4: Unzip, commit, and delete files in batches
+      - name: Unzip and commit files in batches
         run: |
-          # Function to unzip, commit, and push a file
-          process_file() {
+          # Function to unzip a file
+          unzip_file() {
             file=$1
-            echo "Processing $file..."
-
-            # Extract the file
-            if unzip -o zbbig2.zip "$file"; then
-              echo "$file extracted successfully."
-
-              # Check if the file exists after extraction
-              if [ -f "$file" ]; then
-                # Set up Git user for committing
-                git config --global user.name 'github-actions[bot]'
-                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-                # Retry logic for git operations
-                max_attempts=5
-                attempt=0
-
-                while [ $attempt -lt $max_attempts ]; do
-                  if [ -f ".git/index.lock" ]; then
-                    echo "Git lock file exists. Waiting for it to be released..."
-                    sleep 1  # Wait for a bit before retrying
-                    attempt=$((attempt + 1))
-                  else
-                    # Commit the file
-                    git add "$file"
-                    git commit -m "Add extracted file: $file"
-                    git push || echo "Push failed"
-
-                    # Delete the file after pushing
-                    rm "$file" || echo "Failed to delete $file"
-                    break
-                  fi
-                done
-
-                # If the lock file still exists after max attempts, exit
-                if [ -f ".git/index.lock" ]; then
-                  echo "Error: Unable to proceed due to lock file."
-                  exit 1
-                fi
-
-                # Sleep for 1 second
-                sleep 1
-              else
-                echo "$file not found after extraction."
-              fi
-            else
-              echo "Failed to extract $file"
-              exit 1
-            fi
+            echo "Extracting $file..."
+            unzip -o zbbig2.zip "$file" || { echo "Failed to extract $file"; return 1; }
+            echo "$file extracted successfully."
+            return 0
           }
 
-          # Read file list and process files sequentially
+          # Function to push a file
+          push_file() {
+            file=$1
+            echo "Processing $file..."
+            # Set up Git user for committing
+            git config --global user.name 'github-actions[bot]'
+            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+            # Commit the file
+            git add "$file"
+            git commit -m "Add extracted file: $file" || { echo "Failed to commit $file"; return 1; }
+            git push || { echo "Failed to push $file"; return 1; }
+            echo "$file pushed successfully."
+
+            # Delete the file after pushing
+            rm "$file" || echo "Failed to delete $file"
+            echo "$file deleted."
+            return 0
+          }
+
+          # Read file list and process files in batches
           while IFS= read -r line; do
             file=$(echo "$line" | awk '{print $NF}')
 
             # Only process files that start with 'assets/'
             if [[ $file == assets/* ]]; then
-              process_file "$file"  # Run sequentially
+              # Unzip in background
+              unzip_file "$file" &
+
+              # Track the number of background jobs
+              jobs+=("$!")
+
+              # If we have 10 jobs, wait for them to finish
+              if [[ ${#jobs[@]} -eq 10 ]]; then
+                wait "${jobs[@]}"
+                jobs=()  # Reset the jobs array
+                echo "Batch of 10 files extracted successfully."
+                # Now push all extracted files
+                for f in assets/*; do
+                  if [[ -f "$f" ]]; then
+                    push_file "$f"
+                    sleep 1  # Sleep after pushing
+                  fi
+                done
+              fi
             fi
           done < file_list.txt
+
+          # Wait for any remaining jobs after exiting the loop
+          wait "${jobs[@]}"
+
+          # Final push for remaining files
+          for f in assets/*; do
+            if [[ -f "$f" ]]; then
+              push_file "$f"
+              sleep 1  # Sleep after pushing
+            fi
+          done
 
       # Step 5: Clean up
       - name: Clean up
