@@ -80,11 +80,13 @@ jobs:
 
             # Get the next batch of files
             batch_files=("${files[@]:index:batch_size}")
-            
-            # Run extraction and commit in parallel for the batch
-            echo "${batch_files[@]}" | xargs -P $batch_size -I {} bash -c 'extract_and_commit "$@"' _ {}
 
-            # Pause and wait for parallel jobs to finish
+            # Process each file separately to avoid filename concatenation
+            for file in "${batch_files[@]}"; do
+              bash -c 'extract_and_commit "$@"' _ "$file" &
+            done
+
+            # Wait for all background processes to finish
             wait
 
             # Increment index by batch size for next batch
