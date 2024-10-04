@@ -23,80 +23,74 @@ jobs:
       - name: List files in ZIP
         id: list_files
         run: |
-          if unzip -l zbbig2.zip > file_list.txt; then
-            echo "Files listed successfully."
-            cat file_list.txt
-          else
-            echo "Failed to list files in zip."
-            exit 1
-          fi
+          unzip -l zbbig2.zip | awk '/assets\// {print $NF}' > file_list.txt
+          echo "Files listed successfully:"
+          cat file_list.txt
 
-      # Step 4: Unzip and commit files in batches
-      - name: Unzip and commit files
+      # Step 4: Unzip and commit files in parallel
+      - name: Unzip and commit files in batches
         run: |
-          # Function to unzip a file
-          unzip_file() {
-            file=$1
-            echo "Extracting $file..."
-            unzip -o zbbig2.zip "$file" || { echo "Failed to extract $file"; return 1; }
-            echo "$file extracted successfully."
-            return 0
-          }
+          # Function to unzip, commit, and push files
+          process_files() {
+            files=("$@")
+            for file in "${files[@]}"; do
+              echo "Processing $file..."
 
-          # Function to push a file
-          push_file() {
-            file=$1
-            echo "Processing $file..."
-            # Set up Git user for committing
-            git config --global user.name 'github-actions[bot]'
-            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+              # Create a temporary directory for extracted files
+              temp_dir="temp_extracted"
+              mkdir -p "$temp_dir"
 
-            # Commit the file
-            git add "$file"
-            git commit -m "Add extracted file: $file" || { echo "Failed to commit $file"; return 1; }
-            git push || { echo "Failed to push $file"; return 1; }
-            echo "$file pushed successfully."
+              # Extract the file into the temporary directory
+              if unzip -o zbbig2.zip "$file" -d "$temp_dir"; then
+                echo "$file extracted successfully."
 
-            # Delete the file after pushing
-            rm "$file" || echo "Failed to delete $file"
-            echo "$file deleted."
-            return 0
-          }
+                # Check if the file exists after extraction
+                if [ -f "$temp_dir/$file" ]; then
+                  # Set up Git user for committing
+                  git config --global user.name 'github-actions[bot]'
+                  git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-          # Process files in batches of 10
-          while IFS= read -r line; do
-            file=$(echo "$line" | awk '{print $NF}')
+                  # Commit the file
+                  git add "$temp_dir/$file"
+                  git commit -m "Add extracted file: $file"
+                  git push || echo "Push failed"
 
-            # Only process files that start with 'assets/'
-            if [[ $file == assets/* ]]; then
-              # Unzip in the background
-              unzip_file "$file" &
-
-              # Keep track of how many processes are running
-              pids+=($!)
-
-              # If we have 10 processes, wait for them to finish
-              if [[ ${#pids[@]} -ge 10 ]]; then
-                for pid in "${pids[@]}"; do
-                  wait "$pid" || { echo "Process $pid failed."; }
-                done
-                pids=()  # Clear the array
+                  # Delete the file after pushing
+                  rm "$temp_dir/$file" || echo "Failed to delete $file"
+                else
+                  echo "$file not found after extraction."
+                fi
+              else
+                echo "Failed to extract $file"
               fi
+
+              # Clean up temporary directory if empty
+              if [ "$(ls -A $temp_dir)" ]; then
+                echo "Temporary directory not empty: $temp_dir"
+              else
+                rmdir "$temp_dir" || echo "Failed to remove temporary directory"
+              fi
+
+              # Sleep for 1 second to avoid hitting rate limits
+              sleep 1
+            done
+          }
+
+          # Read file list and process files in batches of 10
+          while IFS= read -r line; do
+            files+=("$line")  # Store file names
+
+            # Process in batches of 10
+            if [ ${#files[@]} -eq 10 ]; then
+              process_files "${files[@]}"
+              files=()  # Reset the array for the next batch
             fi
           done < file_list.txt
 
-          # Wait for any remaining unzip processes to finish
-          for pid in "${pids[@]}"; do
-            wait "$pid" || { echo "Process $pid failed."; }
-          done
-
-          # Now push the extracted files
-          for file in $(cat file_list.txt | awk '{print $NF}' | grep '^assets/'); do
-            if [[ -f "$file" ]]; then
-              push_file "$file"
-              sleep 1  # Wait for 1 second after each push
-            fi
-          done
+          # Process remaining files if any
+          if [ ${#files[@]} -gt 0 ]; then
+            process_files "${files[@]}"
+          fi
 
       # Step 5: Clean up
       - name: Clean up
