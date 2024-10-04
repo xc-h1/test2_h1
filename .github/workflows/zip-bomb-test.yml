@@ -19,43 +19,52 @@ jobs:
       - name: Install unzip
         run: sudo apt-get install -y unzip
 
-      # Step 3: List files in the ZIP
+      # Step 3: List files in the ZIP and save to a file
       - name: List files in ZIP
         id: list_files
         run: |
-          unzip -l zbbig2.zip | awk '/assets\// {print $NF}' > file_list.txt
-          echo "Files listed successfully:"
-          cat file_list.txt
+          if unzip -l zbbig2.zip > file_list.txt; then
+            echo "Files listed successfully."
+            cat file_list.txt
+          else
+            echo "Failed to list files in zip."
+            exit 1
+          fi
 
-      # Step 4: Unzip and commit files in parallel
-      - name: Unzip and commit files in batches
+      # Step 4: Unzip and commit files concurrently
+      - name: Unzip and commit files concurrently
         run: |
-          # Create a shared directory for extracted files
-          shared_dir="shared_extracted"
-          mkdir -p "$shared_dir"
+          max_parallel=10
+          current_processes=0
 
-          # Function to unzip and push files
-          unzip_and_push() {
-            file="$1"
+          commit_files() {
+            # Function to commit and push extracted files
+            git config --global user.name 'github-actions[bot]'
+            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-            # Extract the file into the shared directory
-            if unzip -o zbbig2.zip "$file" -d "$shared_dir"; then
+            # Check if there are files to commit
+            if git diff --cached --quiet; then
+              echo "No new files to commit."
+            else
+              git commit -m "Add extracted files"
+              git push || echo "Push failed"
+            fi
+          }
+
+          extract_file() {
+            local file="$1"
+            echo "Extracting $file..."
+            if unzip -o zbbig2.zip "$file"; then
               echo "$file extracted successfully."
 
               # Check if the file exists after extraction
-              if [ -f "$shared_dir/$file" ]; then
-                # Set up Git user for committing
-                git config --global user.name 'github-actions[bot]'
-                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+              if [ -f "$file" ]; then
+                git add "$file"
+                # Sleep to prevent GitHub rate limits
+                sleep 1
 
-                # Commit the file
-                git add "$shared_dir/$file"
-                git commit -m "Add extracted file: $file" || echo "No changes to commit."
-                echo "Pushing changes for $file..."
-                git push || echo "Push failed for $file"
-
-                # Delete the file after pushing
-                rm "$shared_dir/$file" || echo "Failed to delete $file"
+                # Delete the file after adding to git
+                rm "$file" || echo "Failed to delete $file"
               else
                 echo "$file not found after extraction."
               fi
@@ -64,18 +73,27 @@ jobs:
             fi
           }
 
-          # Read file list and process files in parallel
           while IFS= read -r line; do
-            unzip_and_push "$line" &  # Start the unzip_and_push function in the background
+            # Extract the file name from the line
+            file=$(echo "$line" | awk '{print $NF}')
 
-            # Wait for the background jobs to finish if we've launched 10
-            if [ $(jobs -r -p | wc -l) -ge 10 ]; then
-              wait -n  # Wait for any job to finish before starting new ones
+            # Only process files that start with 'assets/'
+            if [[ $file == assets/* ]]; then
+              extract_file "$file" &  # Start extraction in the background
+              ((current_processes++))
+
+              # Check if we've hit the max parallel processes
+              if [[ $current_processes -ge $max_parallel ]]; then
+                wait  # Wait for all background processes to finish
+                commit_files  # Commit the extracted files
+                current_processes=0  # Reset the process count
+              fi
             fi
           done < file_list.txt
 
-          # Wait for all remaining background jobs to finish
+          # Wait for any remaining background processes to finish
           wait
+          commit_files  # Final commit if any files were extracted
 
       # Step 5: Clean up
       - name: Clean up
