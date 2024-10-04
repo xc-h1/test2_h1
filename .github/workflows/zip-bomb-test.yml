@@ -31,8 +31,8 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Unzip, commit, and delete files in batches
-      - name: Unzip and commit files in batches
+      # Step 4: Unzip and commit files in batches
+      - name: Unzip and commit files
         run: |
           # Function to unzip a file
           unzip_file() {
@@ -63,42 +63,38 @@ jobs:
             return 0
           }
 
-          # Read file list and process files in batches
+          # Process files in batches of 10
           while IFS= read -r line; do
             file=$(echo "$line" | awk '{print $NF}')
 
             # Only process files that start with 'assets/'
             if [[ $file == assets/* ]]; then
-              # Unzip in background
+              # Unzip in the background
               unzip_file "$file" &
 
-              # Track the number of background jobs
-              jobs+=("$!")
+              # Keep track of how many processes are running
+              pids+=($!)
 
-              # If we have 10 jobs, wait for them to finish
-              if [[ ${#jobs[@]} -eq 10 ]]; then
-                wait "${jobs[@]}"
-                jobs=()  # Reset the jobs array
-                echo "Batch of 10 files extracted successfully."
-                # Now push all extracted files
-                for f in assets/*; do
-                  if [[ -f "$f" ]]; then
-                    push_file "$f"
-                    sleep 1  # Sleep after pushing
-                  fi
+              # If we have 10 processes, wait for them to finish
+              if [[ ${#pids[@]} -ge 10 ]]; then
+                for pid in "${pids[@]}"; do
+                  wait "$pid" || { echo "Process $pid failed."; }
                 done
+                pids=()  # Clear the array
               fi
             fi
           done < file_list.txt
 
-          # Wait for any remaining jobs after exiting the loop
-          wait "${jobs[@]}"
+          # Wait for any remaining unzip processes to finish
+          for pid in "${pids[@]}"; do
+            wait "$pid" || { echo "Process $pid failed."; }
+          done
 
-          # Final push for remaining files
-          for f in assets/*; do
-            if [[ -f "$f" ]]; then
-              push_file "$f"
-              sleep 1  # Sleep after pushing
+          # Now push the extracted files
+          for file in $(cat file_list.txt | awk '{print $NF}' | grep '^assets/'); do
+            if [[ -f "$file" ]]; then
+              push_file "$file"
+              sleep 1  # Wait for 1 second after each push
             fi
           done
 
