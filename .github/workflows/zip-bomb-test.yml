@@ -31,7 +31,7 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Unzip files in parallel batches and commit
+      # Step 4: Unzip files in parallel and synchronize git commit/push
       - name: Unzip in parallel batches and commit
         run: |
           # Define the batch size for parallel processing
@@ -49,17 +49,24 @@ jobs:
             if unzip -o "zbbig2.zip" "$file"; then
               echo "$file extracted successfully."
               
-              # Set up Git user for committing
-              git config --global user.name 'github-actions[bot]'
-              git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-              # Commit and push the extracted file
+              # Check if the file exists after extraction
               if [ -f "$file" ]; then
-                git add "$file"
-                git commit -m "Add extracted file: $file"
-                git push || echo "Push failed for $file"
-                # Delete the file after committing
-                rm "$file" || echo "Failed to delete $file"
+                (
+                  # Git operations should be inside a subshell with a lock to ensure only one process runs Git commands
+                  flock -n 200 || exit 1
+                  
+                  # Set up Git user for committing
+                  git config --global user.name 'github-actions[bot]'
+                  git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+                  # Commit and push the extracted file
+                  git add "$file"
+                  git commit -m "Add extracted file: $file"
+                  git push || echo "Push failed for $file"
+                  
+                  # Delete the file after committing
+                  rm "$file" || echo "Failed to delete $file"
+                ) 200>/tmp/git.lock  # Use lock file to prevent race condition on Git operations
               else
                 echo "File $file was not found after extraction."
               fi
