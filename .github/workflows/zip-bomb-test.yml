@@ -31,16 +31,22 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Unzip and commit files in parallel
+      # Step 4: Unzip files one by one
       - name: Unzip and commit files in parallel
         run: |
+          # Create a temporary directory for extraction
+          mkdir -p temp_extraction
+
           # Function to unzip a file
           unzip_file() {
             file="$1"
             echo "Extracting $file..."
-            if unzip -o zbbig2.zip "$file"; then
+            if unzip -o zbbig2.zip "$file" -d temp_extraction; then
               echo "$file extracted successfully."
-              
+
+              # Move the extracted file to the root directory
+              mv "temp_extraction/$file" .
+
               # Check if the file exists after extraction
               if [ -f "$file" ]; then
                 # Set up Git user for committing
@@ -87,6 +93,9 @@ jobs:
           for pid in "${pids[@]}"; do
             wait "$pid" || echo "Process $pid failed"
           done
+
+          # Clean up temporary extraction directory
+          rm -rf temp_extraction
 
       # Step 5: Clean up
       - name: Clean up
