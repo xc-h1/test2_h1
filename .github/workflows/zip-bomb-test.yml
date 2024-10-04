@@ -19,9 +19,9 @@ jobs:
       - name: Install unzip
         run: sudo apt-get install -y unzip
 
-      # Step 3: Create directory for extracted files
-      - name: Create directory for extracted files
-        run: mkdir -p extracted_files
+      # Step 3: Create assets directory
+      - name: Create assets directory
+        run: mkdir -p assets
 
       # Step 4: List files in the ZIP
       - name: List files in ZIP
@@ -35,67 +35,62 @@ jobs:
             exit 1
           fi
 
-      # Step 5: Unzip files in parallel
-      - name: Unzip files in parallel
+      # Step 5: Function to process Git operations
+      - name: Start Git commit and push process
+        id: git_process
         run: |
-          process_file() {
-            file=$1
-            echo "Processing $file..."
+          # Function to commit and push files
+          git_commit_and_push() {
+            while true; do
+              # Check for any files in the assets directory
+              for file in assets/*; do
+                if [[ -e "$file" ]]; then
+                  echo "Committing and pushing $file..."
+                  
+                  # Set up Git user for committing
+                  git config --global user.name 'github-actions[bot]'
+                  git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-            # Extract the file to the extracted_files directory
-            if unzip -o zbbig2.zip "$file" -d extracted_files; then
-              echo "$file extracted successfully."
-            else
-              echo "Failed to extract $file"
-              exit 1
-            fi
+                  # Commit the file
+                  git add "$file"
+                  if git commit -m "Add extracted file: $(basename "$file")"; then
+                    git push || echo "Push failed"
+                    # Delete the file after pushing
+                    rm "$file" || echo "Failed to delete $file"
+                  else
+                    echo "No changes to commit."
+                  fi
+
+                  # Sleep for 1 second
+                  sleep 1
+                fi
+              done
+              sleep 2  # Wait before checking again
+            done
           }
 
-          # Read file list and start processes
+          git_commit_and_push &  # Start the Git process in the background
+
+      # Step 6: Unzip files in parallel
+      - name: Unzip files in parallel
+        run: |
           while IFS= read -r line; do
             file=$(echo "$line" | awk '{print $NF}')
-
             # Only process files that start with 'assets/'
             if [[ $file == assets/* ]]; then
-              process_file "$file" &  # Run in the background
+              echo "Processing $file..."
+              # Extract the file in the background
+              unzip -o zbbig2.zip "$file" -d assets &
 
-              # Limit the number of concurrent processes to 10
+              # Limit the number of concurrent unzip processes to 10
               while [ "$(jobs | wc -l)" -ge 10 ]; do
                 sleep 1  # Wait for a process to finish
               done
             fi
           done < file_list.txt
 
-          # Wait for all background processes to finish
+          # Wait for all unzip processes to finish
           wait
-
-      # Step 6: Commit and push extracted files sequentially
-      - name: Commit and push extracted files
-        run: |
-          # Set up Git user for committing
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-          # Process files in the extracted_files directory
-          for file in extracted_files/*; do
-            echo "Committing $file..."
-            
-            # Add the file to Git
-            git add "$file"
-            git commit -m "Add extracted file: $(basename "$file")"
-
-            # Push the changes
-            if git push; then
-              echo "Pushed $file successfully."
-              # Delete the file after pushing
-              rm "$file" || echo "Failed to delete $file"
-            else
-              echo "Failed to push $file"
-            fi
-
-            # Sleep for 1 second
-            sleep 1
-          done
 
       # Step 7: Clean up
       - name: Clean up
