@@ -40,7 +40,7 @@ jobs:
           # Read file list into an array
           mapfile -t files < file_list.txt
 
-          # Function to unzip a single file
+          # Function to unzip and commit files
           extract_and_commit() {
             local file="$1"
             if unzip -o zbbig2.zip "$file"; then
@@ -63,6 +63,9 @@ jobs:
             fi
           }
 
+          # Export the function so xargs can access it
+          export -f extract_and_commit
+
           # Process files in parallel batches
           total_files="${#files[@]}"
           index=0
@@ -74,7 +77,7 @@ jobs:
             batch_files=("${files[@]:index:batch_size}")
             
             # Run extraction and commit in parallel for the batch
-            echo "${batch_files[@]}" | xargs -n 1 -P $batch_size -I {} bash -c 'extract_and_commit "$@"' _ {}
+            echo "${batch_files[@]}" | xargs -P $batch_size -I {} bash -c 'extract_and_commit "$@"' _ {}
 
             # Pause and wait for parallel jobs to finish
             wait
