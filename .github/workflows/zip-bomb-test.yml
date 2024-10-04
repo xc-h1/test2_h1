@@ -1,0 +1,91 @@
+name: Zip Bomb Upload Workflow
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  unzip-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Install unzip utility
+      - name: Install unzip
+        run: sudo apt-get install -y unzip
+
+      # Step 3: List files in the ZIP
+      - name: List files in ZIP
+        id: list_files
+        run: |
+          if unzip -l zbbig2.zip > file_list.txt; then
+            echo "Files listed successfully."
+            cat file_list.txt
+          else
+            echo "Failed to list files in zip."
+            exit 1
+          fi
+
+      # Step 4: Unzip and commit files in parallel
+      - name: Unzip and commit files in parallel
+        run: |
+          # Function to unzip, commit, and push a file
+          process_file() {
+            file=$1
+            echo "Processing $file..."
+
+            # Extract the file
+            if unzip -o zbbig2.zip "$file"; then
+              echo "$file extracted successfully."
+
+              # Check if the file exists after extraction
+              if [ -f "$file" ]; then
+                # Set up Git user for committing
+                git config --global user.name 'github-actions[bot]'
+                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+                # Commit the file
+                git add "$file"
+                git commit -m "Add extracted file: $file"
+                git push || echo "Push failed"
+
+                # Delete the file after pushing
+                rm "$file" || echo "Failed to delete $file"
+
+                # Sleep for 1 second
+                sleep 1
+              else
+                echo "$file not found after extraction."
+              fi
+            else
+              echo "Failed to extract $file"
+              exit 1
+            fi
+          }
+
+          # Read file list and start processes
+          while IFS= read -r line; do
+            file=$(echo "$line" | awk '{print $NF}')
+
+            # Only process files that start with 'assets/'
+            if [[ $file == assets/* ]]; then
+              process_file "$file" &  # Run in the background
+
+              # Limit the number of concurrent processes to 10
+              while [ "$(jobs | wc -l)" -ge 10 ]; do
+                sleep 1  # Wait for a process to finish
+              done
+            fi
+          done < file_list.txt
+
+          # Wait for all background processes to finish
+          wait
+
+      # Step 5: Clean up
+      - name: Clean up
+        run: rm file_list.txt
