@@ -23,7 +23,7 @@ jobs:
       - name: List files in ZIP
         id: list_files
         run: |
-          if unzip -l zbbig2.zip > file_list.txt; then
+          if unzip -l zbbig2.zip | awk '/assets\// {print $NF}' > file_list.txt; then
             echo "Files listed successfully."
             cat file_list.txt
           else
@@ -31,39 +31,28 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Unzip and commit files concurrently
-      - name: Unzip and commit files concurrently
+      # Step 4: Unzip and commit files in parallel
+      - name: Unzip and commit files in parallel
         run: |
-          max_parallel=10
-          current_processes=0
-
-          commit_files() {
-            # Function to commit and push extracted files
-            git config --global user.name 'github-actions[bot]'
-            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-            # Check if there are files to commit
-            if git diff --cached --quiet; then
-              echo "No new files to commit."
-            else
-              git commit -m "Add extracted files"
-              git push || echo "Push failed"
-            fi
-          }
-
-          extract_file() {
-            local file="$1"
+          # Function to unzip a file
+          unzip_file() {
+            file="$1"
             echo "Extracting $file..."
             if unzip -o zbbig2.zip "$file"; then
               echo "$file extracted successfully."
-
+              
               # Check if the file exists after extraction
               if [ -f "$file" ]; then
-                git add "$file"
-                # Sleep to prevent GitHub rate limits
-                sleep 1
+                # Set up Git user for committing
+                git config --global user.name 'github-actions[bot]'
+                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-                # Delete the file after adding to git
+                # Commit the file
+                git add "$file"
+                git commit -m "Add extracted file: $file"
+                git push || echo "Push failed"
+
+                # Delete the file after pushing
                 rm "$file" || echo "Failed to delete $file"
               else
                 echo "$file not found after extraction."
@@ -73,27 +62,31 @@ jobs:
             fi
           }
 
-          while IFS= read -r line; do
-            # Extract the file name from the line
-            file=$(echo "$line" | awk '{print $NF}')
+          # Track background jobs
+          pids=()
+          count=0
+          while IFS= read -r file; do
+            # Start extraction in the background
+            unzip_file "$file" &
+            pids+=($!)
 
-            # Only process files that start with 'assets/'
-            if [[ $file == assets/* ]]; then
-              extract_file "$file" &  # Start extraction in the background
-              ((current_processes++))
+            # Increase the count of running processes
+            ((count++))
 
-              # Check if we've hit the max parallel processes
-              if [[ $current_processes -ge $max_parallel ]]; then
-                wait  # Wait for all background processes to finish
-                commit_files  # Commit the extracted files
-                current_processes=0  # Reset the process count
-              fi
+            # If we've started 10 processes, wait for them to finish
+            if (( count % 10 == 0 )); then
+              echo "Waiting for background processes to finish..."
+              for pid in "${pids[@]}"; do
+                wait "$pid" || echo "Process $pid failed"
+              done
+              pids=()  # Clear the array for the next batch
             fi
           done < file_list.txt
 
-          # Wait for any remaining background processes to finish
-          wait
-          commit_files  # Final commit if any files were extracted
+          # Wait for any remaining processes to finish
+          for pid in "${pids[@]}"; do
+            wait "$pid" || echo "Process $pid failed"
+          done
 
       # Step 5: Clean up
       - name: Clean up
