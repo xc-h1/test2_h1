@@ -43,7 +43,10 @@ jobs:
           # Function to unzip and commit files
           extract_and_commit() {
             local file="$1"
-            if unzip -o zbbig2.zip "$file"; then
+            echo "Attempting to extract $file..."
+
+            # Use quotes to handle special characters in filenames
+            if unzip -o "zbbig2.zip" "$file"; then
               echo "$file extracted successfully."
               
               # Set up Git user for committing
@@ -57,6 +60,8 @@ jobs:
                 git push || echo "Push failed for $file"
                 # Delete the file after committing
                 rm "$file" || echo "Failed to delete $file"
+              else
+                echo "File $file was not found after extraction."
               fi
             else
               echo "Failed to extract $file"
