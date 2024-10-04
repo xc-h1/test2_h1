@@ -15,71 +15,74 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Step 2: Install necessary utilities
-      - name: Install utilities
-        run: sudo apt-get install -y unzip parallel
+      # Step 2: Install unzip utility
+      - name: Install unzip
+        run: sudo apt-get install -y unzip
 
-      # Step 3: List files in the ZIP and save to file
+      # Step 3: List files in the ZIP
       - name: List files in ZIP
         id: list_files
         run: |
-          if unzip -l zbbig2.zip > file_list.txt; then
-            # Extract only the list of files (skip headers and footers)
-            tail -n +4 file_list.txt | head -n -2 | awk '{print $NF}' | grep '^assets/' > filtered_file_list.txt
+          if unzip -l zbbig2.zip | awk '/assets\// {print $NF}' > file_list.txt; then
             echo "Files listed successfully."
-            cat filtered_file_list.txt
+            cat file_list.txt
           else
             echo "Failed to list files in zip."
             exit 1
           fi
 
-      # Step 4: Unzip and commit files in batches
-      - name: Unzip and commit files in batches
+      # Step 4: Unzip files in parallel batches and commit
+      - name: Unzip in parallel batches and commit
         run: |
-          # Function to extract and commit a single file
-          unzip_and_commit() {
-            file=$1
-            echo "Extracting $file..."
+          # Define the batch size for parallel processing
+          batch_size=5
+
+          # Read file list into an array
+          mapfile -t files < file_list.txt
+
+          # Function to unzip a single file
+          extract_and_commit() {
+            local file="$1"
             if unzip -o zbbig2.zip "$file"; then
               echo "$file extracted successfully."
+              
+              # Set up Git user for committing
+              git config --global user.name 'github-actions[bot]'
+              git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-              # Check if the file exists after extraction
+              # Commit and push the extracted file
               if [ -f "$file" ]; then
-                # Set up Git user for committing
-                git config --global user.name 'github-actions[bot]'
-                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-                # Commit the file
                 git add "$file"
                 git commit -m "Add extracted file: $file"
-                echo "$file committed."
-
+                git push || echo "Push failed for $file"
                 # Delete the file after committing
                 rm "$file" || echo "Failed to delete $file"
-              else
-                echo "$file not found after extraction."
               fi
             else
               echo "Failed to extract $file"
-              exit 1
             fi
           }
 
-          export -f unzip_and_commit
+          # Process files in parallel batches
+          total_files="${#files[@]}"
+          index=0
 
-          # Process files in batches of 5, and commit them
-          while IFS= read -r file; do
-            # Run parallel processing for up to 5 files at a time
-            parallel -j 5 unzip_and_commit ::: "$file"
+          while [ $index -lt $total_files ]; do
+            echo "Processing batch starting from index $index"
 
-            # After 5 files, push the changes and delete extracted files
-            echo "Pushing changes to the repository..."
-            git push || echo "Push failed"
+            # Get the next batch of files
+            batch_files=("${files[@]:index:batch_size}")
+            
+            # Run extraction and commit in parallel for the batch
+            echo "${batch_files[@]}" | xargs -n 1 -P $batch_size -I {} bash -c 'extract_and_commit "$@"' _ {}
 
-            # Pause for 1 second before starting the next batch
-            sleep 1
-          done < filtered_file_list.txt
+            # Pause and wait for parallel jobs to finish
+            wait
 
-      # Step 5: Clean up file lists
+            # Increment index by batch size for next batch
+            index=$((index + batch_size))
+          done
+
+      # Step 5: Clean up
       - name: Clean up
-        run: rm -f file_list.txt filtered_file_list.txt
+        run: rm -f file_list.txt
