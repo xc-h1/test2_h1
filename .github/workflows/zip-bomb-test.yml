@@ -44,22 +44,29 @@ jobs:
             if unzip -o zbbig2.zip "$file" -d temp_extraction; then
               echo "$file extracted successfully."
 
-              # Move the extracted file to the root directory
-              mv "temp_extraction/$file" .
+              # Ensure the target directory is empty before moving
+              if [ -d "assets" ]; then
+                rm -rf assets/*
+              else
+                mkdir -p assets
+              fi
+
+              # Move the extracted file to the assets directory
+              mv "temp_extraction/$file" "assets/$file"
 
               # Check if the file exists after extraction
-              if [ -f "$file" ]; then
+              if [ -f "assets/$file" ]; then
                 # Set up Git user for committing
                 git config --global user.name 'github-actions[bot]'
                 git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
                 # Commit the file
-                git add "$file"
+                git add "assets/$file"
                 git commit -m "Add extracted file: $file"
                 git push || echo "Push failed"
 
                 # Delete the file after pushing
-                rm "$file" || echo "Failed to delete $file"
+                rm "assets/$file" || echo "Failed to delete $file"
               else
                 echo "$file not found after extraction."
               fi
