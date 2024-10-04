@@ -30,67 +30,52 @@ jobs:
       # Step 4: Unzip and commit files in parallel
       - name: Unzip and commit files in batches
         run: |
-          # Function to unzip, commit, and push files
-          process_files() {
-            files=("$@")
-            for file in "${files[@]}"; do
-              echo "Processing $file..."
+          # Create a shared directory for extracted files
+          shared_dir="shared_extracted"
+          mkdir -p "$shared_dir"
 
-              # Create a temporary directory for extracted files
-              temp_dir="temp_extracted"
-              mkdir -p "$temp_dir"
+          # Function to unzip and push files
+          unzip_and_push() {
+            file="$1"
 
-              # Extract the file into the temporary directory
-              if unzip -o zbbig2.zip "$file" -d "$temp_dir"; then
-                echo "$file extracted successfully."
+            # Extract the file into the shared directory
+            if unzip -o zbbig2.zip "$file" -d "$shared_dir"; then
+              echo "$file extracted successfully."
 
-                # Check if the file exists after extraction
-                if [ -f "$temp_dir/$file" ]; then
-                  # Set up Git user for committing
-                  git config --global user.name 'github-actions[bot]'
-                  git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+              # Check if the file exists after extraction
+              if [ -f "$shared_dir/$file" ]; then
+                # Set up Git user for committing
+                git config --global user.name 'github-actions[bot]'
+                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-                  # Commit the file
-                  git add "$temp_dir/$file"
-                  git commit -m "Add extracted file: $file"
-                  git push || echo "Push failed"
+                # Commit the file
+                git add "$shared_dir/$file"
+                git commit -m "Add extracted file: $file" || echo "No changes to commit."
+                echo "Pushing changes for $file..."
+                git push || echo "Push failed for $file"
 
-                  # Delete the file after pushing
-                  rm "$temp_dir/$file" || echo "Failed to delete $file"
-                else
-                  echo "$file not found after extraction."
-                fi
+                # Delete the file after pushing
+                rm "$shared_dir/$file" || echo "Failed to delete $file"
               else
-                echo "Failed to extract $file"
+                echo "$file not found after extraction."
               fi
-
-              # Clean up temporary directory if empty
-              if [ "$(ls -A $temp_dir)" ]; then
-                echo "Temporary directory not empty: $temp_dir"
-              else
-                rmdir "$temp_dir" || echo "Failed to remove temporary directory"
-              fi
-
-              # Sleep for 1 second to avoid hitting rate limits
-              sleep 1
-            done
+            else
+              echo "Failed to extract $file"
+            fi
           }
 
-          # Read file list and process files in batches of 10
+          # Read file list and process files in parallel
           while IFS= read -r line; do
-            files+=("$line")  # Store file names
+            unzip_and_push "$line" &  # Start the unzip_and_push function in the background
 
-            # Process in batches of 10
-            if [ ${#files[@]} -eq 10 ]; then
-              process_files "${files[@]}"
-              files=()  # Reset the array for the next batch
+            # Wait for the background jobs to finish if we've launched 10
+            if [ $(jobs -r -p | wc -l) -ge 10 ]; then
+              wait -n  # Wait for any job to finish before starting new ones
             fi
           done < file_list.txt
 
-          # Process remaining files if any
-          if [ ${#files[@]} -gt 0 ]; then
-            process_files "${files[@]}"
-          fi
+          # Wait for all remaining background jobs to finish
+          wait
 
       # Step 5: Clean up
       - name: Clean up
