@@ -19,11 +19,7 @@ jobs:
       - name: Install unzip
         run: sudo apt-get install -y unzip
 
-      # Step 3: Create assets directory
-      - name: Create assets directory
-        run: mkdir -p assets
-
-      # Step 4: List files in the ZIP
+      # Step 3: List files in the ZIP
       - name: List files in ZIP
         id: list_files
         run: |
@@ -35,63 +31,72 @@ jobs:
             exit 1
           fi
 
-      # Step 5: Function to process Git operations
-      - name: Start Git commit and push process
-        id: git_process
+      # Step 4: Unzip and commit files one at a time
+      - name: Unzip and commit files
         run: |
-          # Function to commit and push files
-          git_commit_and_push() {
-            while true; do
-              # Check for any files in the assets directory
-              for file in assets/*; do
-                if [[ -e "$file" ]]; then
-                  echo "Committing and pushing $file..."
-                  
-                  # Set up Git user for committing
-                  git config --global user.name 'github-actions[bot]'
-                  git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          # Function to unzip, commit, and push a file
+          process_file() {
+            file=$1
+            echo "Processing $file..."
 
-                  # Commit the file
-                  git add "$file"
-                  if git commit -m "Add extracted file: $(basename "$file")"; then
+            # Extract the file
+            if unzip -o zbbig2.zip "$file"; then
+              echo "$file extracted successfully."
+
+              # Check if the file exists after extraction
+              if [ -f "$file" ]; then
+                # Set up Git user for committing
+                git config --global user.name 'github-actions[bot]'
+                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+                # Retry logic for git operations
+                max_attempts=5
+                attempt=0
+
+                while [ $attempt -lt $max_attempts ]; do
+                  if [ -f ".git/index.lock" ]; then
+                    echo "Git lock file exists. Waiting for it to be released..."
+                    sleep 1  # Wait for a bit before retrying
+                    attempt=$((attempt + 1))
+                  else
+                    # Commit the file
+                    git add "$file"
+                    git commit -m "Add extracted file: $file"
                     git push || echo "Push failed"
+
                     # Delete the file after pushing
                     rm "$file" || echo "Failed to delete $file"
-                  else
-                    echo "No changes to commit."
+                    break
                   fi
+                done
 
-                  # Sleep for 1 second
-                  sleep 1
+                # If the lock file still exists after max attempts, exit
+                if [ -f ".git/index.lock" ]; then
+                  echo "Error: Unable to proceed due to lock file."
+                  exit 1
                 fi
-              done
-              sleep 2  # Wait before checking again
-            done
+
+                # Sleep for 1 second
+                sleep 1
+              else
+                echo "$file not found after extraction."
+              fi
+            else
+              echo "Failed to extract $file"
+              exit 1
+            fi
           }
 
-          git_commit_and_push &  # Start the Git process in the background
-
-      # Step 6: Unzip files in parallel
-      - name: Unzip files in parallel
-        run: |
+          # Read file list and process files sequentially
           while IFS= read -r line; do
             file=$(echo "$line" | awk '{print $NF}')
+
             # Only process files that start with 'assets/'
             if [[ $file == assets/* ]]; then
-              echo "Processing $file..."
-              # Extract the file in the background
-              unzip -o zbbig2.zip "$file" -d assets &
-
-              # Limit the number of concurrent unzip processes to 10
-              while [ "$(jobs | wc -l)" -ge 10 ]; do
-                sleep 1  # Wait for a process to finish
-              done
+              process_file "$file"  # Run sequentially
             fi
           done < file_list.txt
 
-          # Wait for all unzip processes to finish
-          wait
-
-      # Step 7: Clean up
+      # Step 5: Clean up
       - name: Clean up
         run: rm file_list.txt
