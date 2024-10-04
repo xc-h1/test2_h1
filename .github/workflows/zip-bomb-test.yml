@@ -31,7 +31,7 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Unzip files in parallel and synchronize git commit/push
+      # Step 4: Unzip in parallel batches, but serialize Git operations
       - name: Unzip in parallel batches and commit
         run: |
           # Define the batch size for parallel processing
@@ -40,43 +40,43 @@ jobs:
           # Read file list into an array
           mapfile -t files < file_list.txt
 
-          # Function to unzip and commit files
-          extract_and_commit() {
+          # Function to unzip files
+          extract_file() {
             local file="$1"
             echo "Attempting to extract $file..."
 
             # Use quotes to handle special characters in filenames
             if unzip -o "zbbig2.zip" "$file"; then
               echo "$file extracted successfully."
-              
-              # Check if the file exists after extraction
-              if [ -f "$file" ]; then
-                (
-                  # Git operations should be inside a subshell with a lock to ensure only one process runs Git commands
-                  flock -n 200 || exit 1
-                  
-                  # Set up Git user for committing
-                  git config --global user.name 'github-actions[bot]'
-                  git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-                  # Commit and push the extracted file
-                  git add "$file"
-                  git commit -m "Add extracted file: $file"
-                  git push || echo "Push failed for $file"
-                  
-                  # Delete the file after committing
-                  rm "$file" || echo "Failed to delete $file"
-                ) 200>/tmp/git.lock  # Use lock file to prevent race condition on Git operations
-              else
-                echo "File $file was not found after extraction."
-              fi
             else
               echo "Failed to extract $file"
             fi
           }
 
-          # Export the function so xargs can access it
-          export -f extract_and_commit
+          # Function to commit and push files (serialize this part)
+          commit_and_push() {
+            local file="$1"
+            echo "Committing and pushing $file..."
+
+            # Set up Git user for committing
+            git config --global user.name 'github-actions[bot]'
+            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+            # Commit and push the extracted file
+            if [ -f "$file" ]; then
+              git add "$file"
+              git commit -m "Add extracted file: $file"
+              git push || echo "Push failed for $file"
+              
+              # Delete the file after committing
+              rm "$file" || echo "Failed to delete $file"
+            else
+              echo "File $file was not found after extraction."
+            fi
+          }
+
+          # Export the functions so xargs can access them
+          export -f extract_file commit_and_push
 
           # Process files in parallel batches
           total_files="${#files[@]}"
@@ -88,13 +88,18 @@ jobs:
             # Get the next batch of files
             batch_files=("${files[@]:index:batch_size}")
 
-            # Process each file separately to avoid filename concatenation
+            # Extract files in parallel
             for file in "${batch_files[@]}"; do
-              bash -c 'extract_and_commit "$@"' _ "$file" &
+              bash -c 'extract_file "$@"' _ "$file" &
             done
 
             # Wait for all background processes to finish
             wait
+
+            # Commit and push files (sequentially to avoid conflicts)
+            for file in "${batch_files[@]}"; do
+              bash -c 'commit_and_push "$@"' _ "$file"
+            done
 
             # Increment index by batch size for next batch
             index=$((index + batch_size))
