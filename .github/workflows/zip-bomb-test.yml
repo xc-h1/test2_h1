@@ -19,7 +19,11 @@ jobs:
       - name: Install unzip
         run: sudo apt-get install -y unzip
 
-      # Step 3: List files in the ZIP
+      # Step 3: Create directory for extracted files
+      - name: Create directory for extracted files
+        run: mkdir -p extracted_files
+
+      # Step 4: List files in the ZIP
       - name: List files in ZIP
         id: list_files
         run: |
@@ -31,44 +35,16 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Unzip and commit files in parallel
-      - name: Unzip and commit files in parallel
+      # Step 5: Unzip files in parallel
+      - name: Unzip files in parallel
         run: |
-          # Function to unzip, commit, and push a file with locking
           process_file() {
             file=$1
             echo "Processing $file..."
 
-            # Extract the file
-            if unzip -o zbbig2.zip "$file"; then
+            # Extract the file to the extracted_files directory
+            if unzip -o zbbig2.zip "$file" -d extracted_files; then
               echo "$file extracted successfully."
-
-              # Check if the file exists after extraction
-              if [ -f "$file" ]; then
-                # Set up Git user for committing
-                git config --global user.name 'github-actions[bot]'
-                git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-                # Use a lock file for Git operations
-                lock_file="/tmp/git.lock"
-                {
-                  flock -n 200 || exit 1  # Exit if unable to acquire lock
-
-                  # Commit the file
-                  git add "$file"
-                  git commit -m "Add extracted file: $file"
-                  git push || echo "Push failed"
-
-                  # Delete the file after pushing
-                  rm "$file" || echo "Failed to delete $file"
-
-                } 200>"$lock_file"  # File descriptor 200 for the lock file
-
-                # Sleep for 1 second
-                sleep 1
-              else
-                echo "$file not found after extraction."
-              fi
             else
               echo "Failed to extract $file"
               exit 1
@@ -93,6 +69,34 @@ jobs:
           # Wait for all background processes to finish
           wait
 
-      # Step 5: Clean up
+      # Step 6: Commit and push extracted files sequentially
+      - name: Commit and push extracted files
+        run: |
+          # Set up Git user for committing
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # Process files in the extracted_files directory
+          for file in extracted_files/*; do
+            echo "Committing $file..."
+            
+            # Add the file to Git
+            git add "$file"
+            git commit -m "Add extracted file: $(basename "$file")"
+
+            # Push the changes
+            if git push; then
+              echo "Pushed $file successfully."
+              # Delete the file after pushing
+              rm "$file" || echo "Failed to delete $file"
+            else
+              echo "Failed to push $file"
+            fi
+
+            # Sleep for 1 second
+            sleep 1
+          done
+
+      # Step 7: Clean up
       - name: Clean up
         run: rm file_list.txt
