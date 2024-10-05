@@ -11,16 +11,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Clean up environment before starting
+      # Step 1: Checkout the repository first
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Clean up environment after checkout
       - name: Clean up existing files
         run: |
           echo "Cleaning up the environment..."
           rm -rf assets/ || echo "No assets directory to clean"
           git reset --hard
-
-      # Step 2: Checkout the repository
-      - name: Checkout repository
-        uses: actions/checkout@v3
 
       # Step 3: Install unzip utility
       - name: Install unzip
@@ -38,7 +38,7 @@ jobs:
             exit 1
           fi
 
-      # Step 5: Unzip and commit in batches with reduced parallelism
+      # Step 5: Unzip and commit files in manageable batches
       - name: Unzip and commit files in manageable batches
         run: |
           # Define batch size and parallelism
