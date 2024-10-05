@@ -11,15 +11,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repository
+      # Step 1: Clean up environment before starting
+      - name: Clean up existing files
+        run: |
+          echo "Cleaning up the environment..."
+          rm -rf assets/ || echo "No assets directory to clean"
+          git reset --hard
+
+      # Step 2: Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Step 2: Install unzip utility
+      # Step 3: Install unzip utility
       - name: Install unzip
         run: sudo apt-get install -y unzip
 
-      # Step 3: List files in the ZIP
+      # Step 4: List files in the ZIP
       - name: List files in ZIP
         id: list_files
         run: |
@@ -31,112 +38,67 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Check for existing files on the repository
-      - name: Check for existing files
-        id: check_existing
+      # Step 5: Unzip and commit in batches with reduced parallelism
+      - name: Unzip and commit files in manageable batches
         run: |
-          # Get a list of all files already in the repo
-          git ls-tree -r HEAD --name-only > existing_files.txt
-          echo "Files already in the repository:"
-          cat existing_files.txt
-
-          # Remove files already present in the repo from the list
-          grep -vFf existing_files.txt file_list.txt > files_to_process.txt
-          echo "Files to process:"
-          cat files_to_process.txt
-
-      # Step 5: Unzip in parallel batches, but serialize Git operations
-      - name: Unzip in parallel batches and commit
-        run: |
-          # Define the batch size for parallel processing
-          batch_size=5
-          max_retries=3
-
-          # Read the file list into an array
-          mapfile -t files < files_to_process.txt
-
-          # Function to retry an operation
-          retry() {
-            local retries=0
-            local max_retries="$1"
-            shift
-            until "$@"; do
-              retries=$((retries + 1))
-              if [ "$retries" -ge "$max_retries" ]; then
-                echo "Failed after $retries retries."
-                return 1
-              fi
-              echo "Retrying ($retries/$max_retries)..."
-              sleep 2
-            done
-          }
+          # Define batch size and parallelism
+          batch_size=3
+          parallel_jobs=2
+          
+          # Read file list into an array
+          mapfile -t files < file_list.txt
 
           # Function to unzip files
           extract_file() {
             local file="$1"
             echo "Attempting to extract $file..."
-
-            # Use quotes to handle special characters in filenames
+            # Handle special characters in filenames
             if unzip -o "zbbig2.zip" "$file"; then
               echo "$file extracted successfully."
             else
-              echo "Failed to extract $file"
+              echo "Failed to extract $file" >&2
               return 1
             fi
           }
 
-          # Function to commit and push files (serialize this part)
+          # Function to commit and push files
           commit_and_push() {
             local file="$1"
             echo "Committing and pushing $file..."
-
-            # Set up Git user for committing
             git config --global user.name 'github-actions[bot]'
             git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-            # Commit and push the extracted file
-            if [ -f "$file" ]; then
-              git add "$file"
-              git commit -m "Add extracted file: $file"
-              git push || echo "Push failed for $file"
-              
-              # Delete the file after committing
-              rm "$file" || echo "Failed to delete $file"
-            else
-              echo "File $file was not found after extraction."
-            fi
+            git add "$file"
+            git commit -m "Add extracted file: $file"
+            git push || (echo "Push failed for $file" && return 1)
+            rm "$file" || echo "Failed to delete $file"
           }
 
-          # Export the functions so xargs can access them
-          export -f extract_file commit_and_push retry
-
-          # Process files in parallel batches
+          # Process files in batches
           total_files="${#files[@]}"
           index=0
 
           while [ $index -lt $total_files ]; do
             echo "Processing batch starting from index $index"
-
-            # Get the next batch of files
             batch_files=("${files[@]:index:batch_size}")
-
-            # Extract files in parallel, with retry functionality
+            
+            # Extract files in limited parallel jobs
             for file in "${batch_files[@]}"; do
-              bash -c 'retry "$@" extract_file "$file"' _ "$max_retries" "$file" &
+              (extract_file "$file" &) &  # Limit to $parallel_jobs jobs
+              if [[ $(jobs -r -p | wc -l) -ge $parallel_jobs ]]; then wait; fi
             done
 
-            # Wait for all background processes to finish
+            # Wait for extraction processes to finish
             wait
 
-            # Commit and push files (sequentially to avoid conflicts)
+            # Commit and push files sequentially to avoid Git conflicts
             for file in "${batch_files[@]}"; do
-              bash -c 'commit_and_push "$@"' _ "$file"
+              commit_and_push "$file" || echo "Error committing $file"
             done
-
-            # Increment index by batch size for next batch
+            
+            # Move to the next batch
             index=$((index + batch_size))
           done
 
-      # Step 6: Clean up
-      - name: Clean up
-        run: rm -f file_list.txt files_to_process.txt existing_files.txt
+      # Step 6: Clean up any remaining files
+      - name: Final cleanup
+        run: rm -f file_list.txt
