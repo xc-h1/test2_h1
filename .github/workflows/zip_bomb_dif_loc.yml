@@ -1,0 +1,110 @@
+name: Zip Bomb Upload Workflow
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  unzip-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Install unzip utility
+      - name: Install unzip
+        run: sudo apt-get install -y unzip
+
+      # Step 3: List files in the ZIP
+      - name: List files in ZIP
+        id: list_files
+        run: |
+          if unzip -l zbbig2.zip | awk '/assets2nd\// {print $NF}' > file_list.txt; then
+            echo "Files listed successfully."
+            cat file_list.txt
+          else
+            echo "Failed to list files in zip."
+            exit 1
+          fi
+
+      # Step 4: Unzip in parallel batches, but serialize Git operations
+      - name: Unzip in parallel batches and commit
+        run: |
+          # Define the batch size for parallel processing
+          batch_size=5
+
+          # Read file list into an array
+          mapfile -t files < file_list.txt
+
+          # Function to unzip files
+          extract_file() {
+            local file="$1"
+            echo "Attempting to extract $file..."
+
+            # Use quotes to handle special characters in filenames
+            if unzip -o "zbbig2.zip" "$file" -d assets2nd; then
+              echo "$file extracted successfully."
+            else
+              echo "Failed to extract $file"
+            fi
+          }
+
+          # Function to commit and push files (serialize this part)
+          commit_and_push() {
+            local file="$1"
+            echo "Committing and pushing $file..."
+
+            # Set up Git user for committing
+            git config --global user.name 'github-actions[bot]'
+            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+            # Commit and push the extracted file
+            if [ -f "assets2nd/$file" ]; then
+              git add "assets2nd/$file"
+              git commit -m "Add extracted file: $file"
+              git push || echo "Push failed for $file"
+              
+              # Delete the file after committing
+              rm "assets2nd/$file" || echo "Failed to delete $file"
+            else
+              echo "File $file was not found after extraction."
+            fi
+          }
+
+          # Export the functions so xargs can access them
+          export -f extract_file commit_and_push
+
+          # Process files in parallel batches
+          total_files="${#files[@]}"
+          index=0
+
+          while [ $index -lt $total_files ]; do
+            echo "Processing batch starting from index $index"
+
+            # Get the next batch of files
+            batch_files=("${files[@]:index:batch_size}")
+
+            # Extract files in parallel
+            for file in "${batch_files[@]}"; do
+              bash -c 'extract_file "$@"' _ "$file" &
+            done
+
+            # Wait for all background processes to finish
+            wait
+
+            # Commit and push files (sequentially to avoid conflicts)
+            for file in "${batch_files[@]}"; do
+              bash -c 'commit_and_push "$@"' _ "$file"
+            done
+
+            # Increment index by batch size for next batch
+            index=$((index + batch_size))
+          done
+
+      # Step 5: Clean up
+      - name: Clean up
+        run: rm -f file_list.txt
