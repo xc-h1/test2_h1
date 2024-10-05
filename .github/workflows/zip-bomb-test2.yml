@@ -31,57 +31,58 @@ jobs:
             exit 1
           fi
 
-      # Step 4: Check for existing files in the repository
+      # Step 4: Check for existing files on the repository
       - name: Check for existing files
+        id: check_existing
         run: |
-          existing_files=$(git ls-tree -r HEAD --name-only | grep -E '^assets/')
-          if [ -n "$existing_files" ]; then
-            echo "Files already in the repository:"
-            echo "$existing_files"
-          else
-            echo "No existing files found in the repository."
-          fi
+          # Get a list of all files already in the repo
+          git ls-tree -r HEAD --name-only > existing_files.txt
+          echo "Files already in the repository:"
+          cat existing_files.txt
 
-          # Filter out files that are already in the repo
-          grep -vxFf <(echo "$existing_files") file_list.txt > file_list_filtered.txt
+          # Remove files already present in the repo from the list
+          grep -vFf existing_files.txt file_list.txt > files_to_process.txt
           echo "Files to process:"
-          cat file_list_filtered.txt
+          cat files_to_process.txt
 
       # Step 5: Unzip in parallel batches, but serialize Git operations
       - name: Unzip in parallel batches and commit
         run: |
           # Define the batch size for parallel processing
           batch_size=5
+          max_retries=3
 
-          # Read filtered file list into an array
-          mapfile -t files < file_list_filtered.txt
+          # Read the file list into an array
+          mapfile -t files < files_to_process.txt
 
-          # Retry function with a maximum of 3 retries
+          # Function to retry an operation
           retry() {
-            local n=0
-            local max=3
-            local delay=5
-            while true; do
-              "$@" && break || {
-                if [[ $n -lt $max ]]; then
-                  ((n++))
-                  echo "Retry $n/$max after $delay seconds..."
-                  sleep $delay
-                else
-                  echo "Failed after $n attempts."
-                  return 1
-                fi
-              }
+            local retries=0
+            local max_retries="$1"
+            shift
+            until "$@"; do
+              retries=$((retries + 1))
+              if [ "$retries" -ge "$max_retries" ]; then
+                echo "Failed after $retries retries."
+                return 1
+              fi
+              echo "Retrying ($retries/$max_retries)..."
+              sleep 2
             done
           }
 
-          # Function to unzip files with retry logic
+          # Function to unzip files
           extract_file() {
             local file="$1"
             echo "Attempting to extract $file..."
 
-            # Use retry for the extraction process
-            retry unzip -o "zbbig2.zip" "$file" && echo "$file extracted successfully." || echo "Failed to extract $file"
+            # Use quotes to handle special characters in filenames
+            if unzip -o "zbbig2.zip" "$file"; then
+              echo "$file extracted successfully."
+            else
+              echo "Failed to extract $file"
+              return 1
+            fi
           }
 
           # Function to commit and push files (serialize this part)
@@ -93,11 +94,11 @@ jobs:
             git config --global user.name 'github-actions[bot]'
             git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-            # Commit and push the extracted file with retry logic
+            # Commit and push the extracted file
             if [ -f "$file" ]; then
               git add "$file"
-              retry git commit -m "Add extracted file: $file"
-              retry git push || echo "Push failed for $file"
+              git commit -m "Add extracted file: $file"
+              git push || echo "Push failed for $file"
               
               # Delete the file after committing
               rm "$file" || echo "Failed to delete $file"
@@ -119,9 +120,9 @@ jobs:
             # Get the next batch of files
             batch_files=("${files[@]:index:batch_size}")
 
-            # Extract files in parallel
+            # Extract files in parallel, with retry functionality
             for file in "${batch_files[@]}"; do
-              bash -c 'extract_file "$@"' _ "$file" &
+              bash -c 'retry "$@" extract_file "$file"' _ "$max_retries" "$file" &
             done
 
             # Wait for all background processes to finish
@@ -138,4 +139,4 @@ jobs:
 
       # Step 6: Clean up
       - name: Clean up
-        run: rm -f file_list.txt file_list_filtered.txt
+        run: rm -f file_list.txt files_to_process.txt existing_files.txt
