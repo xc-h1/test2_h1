@@ -1,0 +1,141 @@
+name: Zip Bomb Upload Workflow
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  unzip-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Install unzip utility
+      - name: Install unzip
+        run: sudo apt-get install -y unzip
+
+      # Step 3: List files in the ZIP
+      - name: List files in ZIP
+        id: list_files
+        run: |
+          if unzip -l zbbig2.zip | awk '/assets\// {print $NF}' > file_list.txt; then
+            echo "Files listed successfully."
+            cat file_list.txt
+          else
+            echo "Failed to list files in zip."
+            exit 1
+          fi
+
+      # Step 4: Check for existing files in the repository
+      - name: Check for existing files
+        run: |
+          existing_files=$(git ls-tree -r HEAD --name-only | grep -E '^assets/')
+          if [ -n "$existing_files" ]; then
+            echo "Files already in the repository:"
+            echo "$existing_files"
+          else
+            echo "No existing files found in the repository."
+          fi
+
+          # Filter out files that are already in the repo
+          grep -vxFf <(echo "$existing_files") file_list.txt > file_list_filtered.txt
+          echo "Files to process:"
+          cat file_list_filtered.txt
+
+      # Step 5: Unzip in parallel batches, but serialize Git operations
+      - name: Unzip in parallel batches and commit
+        run: |
+          # Define the batch size for parallel processing
+          batch_size=5
+
+          # Read filtered file list into an array
+          mapfile -t files < file_list_filtered.txt
+
+          # Retry function with a maximum of 3 retries
+          retry() {
+            local n=0
+            local max=3
+            local delay=5
+            while true; do
+              "$@" && break || {
+                if [[ $n -lt $max ]]; then
+                  ((n++))
+                  echo "Retry $n/$max after $delay seconds..."
+                  sleep $delay
+                else
+                  echo "Failed after $n attempts."
+                  return 1
+                fi
+              }
+            done
+          }
+
+          # Function to unzip files with retry logic
+          extract_file() {
+            local file="$1"
+            echo "Attempting to extract $file..."
+
+            # Use retry for the extraction process
+            retry unzip -o "zbbig2.zip" "$file" && echo "$file extracted successfully." || echo "Failed to extract $file"
+          }
+
+          # Function to commit and push files (serialize this part)
+          commit_and_push() {
+            local file="$1"
+            echo "Committing and pushing $file..."
+
+            # Set up Git user for committing
+            git config --global user.name 'github-actions[bot]'
+            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+            # Commit and push the extracted file with retry logic
+            if [ -f "$file" ]; then
+              git add "$file"
+              retry git commit -m "Add extracted file: $file"
+              retry git push || echo "Push failed for $file"
+              
+              # Delete the file after committing
+              rm "$file" || echo "Failed to delete $file"
+            else
+              echo "File $file was not found after extraction."
+            fi
+          }
+
+          # Export the functions so xargs can access them
+          export -f extract_file commit_and_push retry
+
+          # Process files in parallel batches
+          total_files="${#files[@]}"
+          index=0
+
+          while [ $index -lt $total_files ]; do
+            echo "Processing batch starting from index $index"
+
+            # Get the next batch of files
+            batch_files=("${files[@]:index:batch_size}")
+
+            # Extract files in parallel
+            for file in "${batch_files[@]}"; do
+              bash -c 'extract_file "$@"' _ "$file" &
+            done
+
+            # Wait for all background processes to finish
+            wait
+
+            # Commit and push files (sequentially to avoid conflicts)
+            for file in "${batch_files[@]}"; do
+              bash -c 'commit_and_push "$@"' _ "$file"
+            done
+
+            # Increment index by batch size for next batch
+            index=$((index + batch_size))
+          done
+
+      # Step 6: Clean up
+      - name: Clean up
+        run: rm -f file_list.txt file_list_filtered.txt
